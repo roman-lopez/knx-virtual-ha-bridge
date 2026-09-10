@@ -22,23 +22,27 @@ When setting up a simulated smart home / yacht automation testbed with **KNX Vir
 ## Architecture & How It Works
 
 This gateway operates on Windows host as an active **Application-Level Gateway**:
-+---------------------------+              +-------------------------------------+
-|  Home Assistant OS (VM)   |              |         Windows Host System         |
-|   Bridged Adapter         |              |                                     |
-|   (e.g., 192.168.1.69)    |              |  +-------------------------------+  |
-|                           |              |  |   knx_bridge.ps1 (Port 3672)  |  |
-|                           | UDP 3672     |  +-------------------------------+  |
-|                           |=>|   • Inspects & translates HPAI      |
-|                           |              |   • Filters VM via Whitelist        |
-|                           |              |   • Rewrites Data Endpoints         |
-|                           |<=|                  │                  |
-|                           | UDP Reply    |                  │ Loopback UDP     |
-|                           |              |                  ▼ (Port 3671)      |
-|                           |              |  +-------------------------------+  |
-|                           |              |  |     KNX Virtual Simulator     |  |
-|                           |              |  |        (127.0.0.1:3671)       |  |
-|                           |              |  +-------------------------------+  |
-+---------------------------+              +-------------------------------------+
+```mermaid
+flowchart LR
+    subgraph VM ["Virtual Machine (Bridged Adapter)"]
+        HA["<b>Home Assistant OS</b><br/>IP: 192.168.1.69<br/>KNX Integration Client"]
+    end
+
+    subgraph Host ["Windows Host System (Host IP: e.g. 192.168.1.98)"]
+        Bridge["<b>knx_bridge.ps1 (ALG Proxy)</b><br/>Listening on UDP 3672<br/>──────────────────────<br/>• VM Whitelist Verification<br/>• Dynamic HPAI Header Rewriting<br/>• Server Data Endpoint Translation"]
+        KV["<b>KNX Virtual Simulator</b><br/>Bound to 127.0.0.1:3671 UDP<br/>(Interface D20)"]
+    end
+
+    HA -- "UDP 3672 (Connect / Data)" --> Bridge
+    Bridge -- "UDP Reply (Rewritten Endpoints)" --> HA
+    Bridge <--> |"Loopback UDP 3671"| KV
+
+    style VM fill:#f8fafc,stroke:#64748b,stroke-width:1px
+    style Host fill:#f1f5f9,stroke:#475569,stroke-width:1px
+    style HA fill:#e0f2fe,stroke:#0284c7,stroke-width:2px
+    style Bridge fill:#ffedd5,stroke:#ea580c,stroke-width:2px
+    style KV fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+```
 
 * **Upstream Translation (HA $\rightarrow$ KNX Virtual):** Rewrites the HPAI structures of `CONNECT_REQUEST` and `DESCRIPTION_REQUEST` from the VM's IP to `127.0.0.1` and points to an ephemeral host sender port.
 * **Downstream Translation (KNX Virtual $\rightarrow$ HA):** Rewrites the *Server Data Endpoint* inside `CONNECT_RESPONSE` to the Windows physical LAN IP and port `3672`, ensuring Home Assistant directs future telegrams to this proxy.
@@ -66,3 +70,65 @@ Set-NetConnectionProfile -NetworkCategory Private
 
 # Allow UDP port 3672 inbound
 New-NetFirewallRule -DisplayName "KNX Virtual Bridge" -Direction Inbound -LocalPort 3672 -Protocol UDP -Action Allow
+
+### 2. Configure Script
+
+Open `knx_bridge.ps1` in a code editor and set your network variables at the top of the file:
+
+```powershell
+# IP address of your Home Assistant OS Virtual Machine (Bridged Adapter)
+$HomeAssistantIP = "192.168.1.69"   # <-- Replace with your actual HA VM IP
+
+# Physical IPv4 address of the Windows Host running KNX Virtual
+# Leave empty ("") for automatic local route detection
+$HostIPOverride = ""               # <-- (Optional) e.g., "192.168.1.98"
+```
+
+### 3. Launch KNX Virtual
+
+1. Open **KNX Virtual**.
+2. Make sure the IP interface (`D20`) is active.
+3. Verify that the interface is listening on UDP port `3671` on `127.0.0.1`.
+
+### 4. Run the Bridge
+
+Open an elevated PowerShell terminal (**Run as Administrator**) on your Windows host and execute the script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\knx_bridge.ps1
+```
+
+Expected output in console:
+```text
+==========================================================
+KNX UDP NAT APPLICATION GATEWAY ACTIVE (3672 <-> 3671)
+Host IP: 192.168.1.98 | Authorized HA VM: 192.168.1.69
+Local ephemeral port to simulator: 58672
+==========================================================
+```
+
+### 5. Configure Home Assistant
+
+1. In the Home Assistant web dashboard, navigate to **Settings** -> **Devices & Services** -> **Add Integration**.
+2. Search for and select **KNX**.
+3. Choose **Tunneling (UDP)** as the connection method.
+4. Fill in the connection parameters:
+   * **Host:** `<YOUR_WINDOWS_HOST_PHYSICAL_IP>` (e.g., `192.168.1.98`)
+   * **Port:** `3672`
+5. Click **Submit**. Home Assistant will establish the session and bind to logical individual address `1.0.255`.
+
+### 6. Verify Communication
+
+Once connected, trigger actions (e.g., turning on lights, moving blinds) or observe sensor telegrams. The PowerShell terminal logs all incoming and outgoing datagrams with decoded KNXnet/IP services in real time:
+
+* `-> HA: CONNECT_REQUEST (HPAI translated to 127.0.0.1:58672)`
+* `<- KNX: CONNECT_RESPONSE (Data Endpoint translated to 192.168.1.98:3672)`
+* `-> HA: DATA TELEGRAM TUNNELING_REQUEST (21 bytes)`
+* `<- KNX: TUNNELING_ACK (Command confirmed by actuator)`
+* `<- KNX: STATE TELEGRAM (21 bytes)`
+
+---
+
+## License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
