@@ -53,7 +53,7 @@ flowchart LR
 ## Prerequisites
 
 * Windows 10 or Windows 11 (Host machine).
-* [KNX Virtual](https://support.knx.org/hc/en-us/sections/360003367780-KNX-Virtual) (Installed and running).
+* [KNX Virtual](https://my.knx.org/es/shop/software?product_type=knx-virtual) (Installed and running).
 * Home Assistant OS running inside VirtualBox / VMware configured with **Bridged Networking**.
 * PowerShell 5.1 or later.
 
